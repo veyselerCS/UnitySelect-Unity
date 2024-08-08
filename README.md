@@ -6,7 +6,7 @@ This repository contains a Unity project that includes a custom `CommandListener
 
 1. **Clone the repository**:
     ```sh
-    git clone <repository-url>
+    git clone [<repository-url>](https://github.com/veyselerCS/UnitySelect-Unity)
     ```
 
 2. **Copy the Editor folder**:
