@@ -8,99 +8,30 @@ using System.Text;
 using System.Collections.Generic;
 using System.Reflection;
 
-[InitializeOnLoad]
-public class CommandListener
+public class CommandListenerWorker : IDisposable
 {
-    private static TcpListener _listener;
-    private static Thread _listenerThread;
-    private static object _queueLock;
-    private static Queue<Action> _pendingActions;
+    private TcpListener _listener;
+    private Thread _listenerThread;
+    private Queue<Action> _pendingActions;
+    private volatile bool _isRunning;
 
-    private const int Port = 50000;
-
-    private static bool _isInitialized;
-
-    private static bool IsEnabled
+    public CommandListenerWorker()
     {
-        get => PlayerPrefs.GetInt("CommandListenerEnabled", 0) == 1;
-        set => PlayerPrefs.SetInt("CommandListenerEnabled", value ? 1 : 0);
-    }
-
-    static CommandListener()
-    {
-        if (_isInitialized)
-        {
-            CleanUp();
-        }
-
-        if (!IsEnabled)
-            return;
-
-        Start();
-    }
-
-    [MenuItem("Tools/Command Listener/Enable")]
-    private static void Enable()
-    {
-        if (IsEnabled)
-            return;
-
-        IsEnabled = true;
-
-        Start();
-
-        Debug.Log("Command Listener enabled");
-    }
-
-    [MenuItem("Tools/Command Listener/Disable")]
-    private static void Disable()
-    {
-        if (!IsEnabled)
-            return;
-
-        IsEnabled = false;
-        CleanUp();
-
-        Debug.Log("Command Listener disabled");
-    }
-
-    private static void Start()
-    {
-        if (_isInitialized)
-            return;
-
-        _isInitialized = true;
-
-        _queueLock = new object();
         _pendingActions = new Queue<Action>();
-
-        EditorApplication.update += OnEditorUpdate;
-        StartListener();
-    }
-
-    private static void CleanUp()
-    {
-        if (!_isInitialized)
-            return;
-
-        StopListener();
-        //set everything to null
-        _queueLock = null;
-        _pendingActions = null;
-        _isInitialized = false;
-        EditorApplication.update -= OnEditorUpdate;
-    }
-
-    private static void StartListener()
-    {
-        StopListener();
-
-        _listener = new TcpListener(System.Net.IPAddress.Loopback, Port);
+        _listener = new TcpListener(System.Net.IPAddress.Loopback, CommandListener.Port);
         _listener.Start();
 
+        _isRunning = true;
+        StartThread();
+
+        EditorApplication.update += OnEditorUpdate;
+    }
+
+    private void StartThread()
+    {
         _listenerThread = new Thread(async () =>
         {
-            while (true)
+            while (_isRunning)
             {
                 try
                 {
@@ -124,11 +55,8 @@ public class CommandListener
                                 var args = buffer[1..];
                                 var className = command.Split(".")[0];
                                 var methodName = command.Split(".")[1];
-
-                                lock (_queueLock)
-                                {
-                                    _pendingActions.Enqueue(() => InvokeMethod(className, methodName, args));
-                                }
+                                _pendingActions.Enqueue(() => InvokeMethod(className, methodName, args));
+                                Debug.Log($"Command received: {command}");
                             }
                         }
                         catch (Exception e)
@@ -137,12 +65,12 @@ public class CommandListener
                         }
                     }
                 }
-                catch (ThreadAbortException)
-                {
-                }
                 catch (Exception e)
                 {
-                    Debug.LogError(e);
+                    if (_isRunning)
+                    {
+                        Debug.LogError(e);
+                    }
                 }
             }
         })
@@ -150,18 +78,6 @@ public class CommandListener
             IsBackground = true
         };
         _listenerThread.Start();
-    }
-
-    private static void OnEditorUpdate()
-    {
-        lock (_queueLock)
-        {
-            while (_pendingActions.Count > 0)
-            {
-                var action = _pendingActions.Dequeue();
-                action.Invoke();
-            }
-        }
     }
 
     private static void InvokeMethod(string className, string methodName, string[] args)
@@ -199,15 +115,33 @@ public class CommandListener
         }
     }
 
-    private static void StopListener()
+    private void OnEditorUpdate()
     {
+        while (_pendingActions.Count > 0)
+        {
+            var action = _pendingActions.Dequeue();
+            action.Invoke();
+        }
+    }
+
+    public void Dispose()
+    {
+        _isRunning = false; // Set the flag to false to stop the thread
+
         _listener?.Stop();
         _listener = null;
 
         if (_listenerThread != null && _listenerThread.IsAlive)
         {
-            _listenerThread.Abort();
+            _listenerThread.Join(); // Wait for the thread to exit gracefully
             _listenerThread = null;
         }
+
+        EditorApplication.update -= OnEditorUpdate;
+    }
+
+    ~CommandListenerWorker()
+    {
+        Dispose();
     }
 }
